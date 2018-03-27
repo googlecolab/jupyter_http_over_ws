@@ -1,0 +1,11 @@
+# The Travis-CI configuration for colabtools is just a stub; tests for
+# colabtools are run internally.
+
+language: python
+sudo: false
+python:
+  - "2.7"
+  - "3.6"
+
+install: pip install tox-travis
+script: tox
