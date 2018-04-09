@@ -31,7 +31,7 @@ HANDLER_VERSION = version.StrictVersion('0.0.1a1')
 
 class HttpOverWebSocketHandler(websocket.WebSocketHandler,
                                handlers.IPythonHandler):
-  """Socket handler that forwards requests via HTTP to the notebook server."""
+  """Socket handler that forwards requests via HTTP to the notebook servers."""
 
   _REQUIRED_KEYS = {'path', 'method', 'message_id'}
 
