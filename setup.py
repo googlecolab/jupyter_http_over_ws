@@ -29,7 +29,7 @@ setup(
     author_email='colaboratory-team@google.com',
     description='Jupyter support for HTTP-over-ws',
     long_description='Jupyter support for HTTP-over-ws',
-    url='https://colaboratory.research.google.com/',
+    url='https://github.com/googlecolab/jupyter_http_over_ws',
     packages=find_packages(exclude=('tests*',)),
     install_requires=DEPENDENCIES,
     license='Apache 2.0',
