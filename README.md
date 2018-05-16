@@ -33,6 +33,25 @@ open the browser window specified in the command-line when the notebook server
 starts up. This will set an auth cookie that is required for allowing requests
 (http://jupyter-notebook.readthedocs.io/en/stable/security.html).
 
+## Troubleshooting
+
+### Receiving 403 errors when attempting connection
+
+If the auth cookie isn't present when a connection is attempted, you may see a
+403 error. To help prevent these types of issues, consider starting your Jupyter
+server using the `--no-browser` flag and open the provided link that appears in
+the terminal from the same browser that you would like to connect from:
+
+``` shell
+jupyter notebook \
+  --NotebookApp.allow_origin='https://www.example.com' \
+  --port=8081
+  --no-browser
+```
+
+If you still see issues, consider retrying the above steps from an incognito
+window which will prevent issues related to browser extensions.
+
 ## Contributing
 
 If you have a problem, or see something that could be improved, please file an
