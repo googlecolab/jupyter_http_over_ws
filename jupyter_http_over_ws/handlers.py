@@ -26,7 +26,7 @@ from tornado import httputil
 from tornado import stack_context
 from tornado import websocket
 
-HANDLER_VERSION = version.StrictVersion('0.0.1a1')
+HANDLER_VERSION = version.StrictVersion('0.0.1a2')
 
 
 class HttpOverWebSocketHandler(websocket.WebSocketHandler,
@@ -35,7 +35,7 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
 
   _REQUIRED_KEYS = {'path', 'method', 'message_id'}
 
-  _REQUIRE_XSRF_FORWARDING_METHODS = {'POST', 'PATCH'}
+  _REQUIRE_XSRF_FORWARDING_METHODS = {'DELETE', 'PATCH', 'POST', 'PUT'}
 
   _REQUIRE_NO_BODY_METHODS = {'GET', 'HEAD'}
 

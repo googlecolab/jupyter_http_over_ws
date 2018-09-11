@@ -123,6 +123,7 @@ class HttpOverWebSocketHandlerTestBase(object):
     """Setup code required by testing.AsyncHTTP[S]TestCase."""
     settings = {
         'base_url': '/',
+        'local_hostnames': ['localhost'],
         # This flag controls which domains cross-origin requests are allowed
         # for.
         'allow_origin': WHITELISTED_ORIGIN,
@@ -377,7 +378,7 @@ class HttpOverWebSocketHandlerTestBase(object):
   @testing.gen_test
   def test_current_version_requested(self):
     request = self.get_ws_connection_request()
-    request.url += '?min_version=0.0.1a1'
+    request.url += '?min_version=0.0.1a2'
 
     client = yield websocket.websocket_connect(request)
     client.write_message('abc')

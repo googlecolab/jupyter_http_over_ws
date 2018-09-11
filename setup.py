@@ -24,7 +24,7 @@ DEPENDENCIES = (
 
 setup(
     name='jupyter_http_over_ws',
-    version='0.0.1a1',
+    version='0.0.1a2',
     author='Google Colaboratory team',
     author_email='colaboratory-team@google.com',
     description='Jupyter support for HTTP-over-ws',
