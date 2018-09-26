@@ -31,6 +31,8 @@ TEST_XSRF_HEADER = 'Propagated-Xsrf'
 
 class FakeSessionsHandler(web.RequestHandler):
 
+  SUPPORTED_METHODS = web.RequestHandler.SUPPORTED_METHODS + ('CUSTOMMETHOD',)
+
   # List of three-tuples containing:
   # 1) Query argument name
   # 2) Response code to return if query arg present
@@ -49,6 +51,9 @@ class FakeSessionsHandler(web.RequestHandler):
         self.set_status(response_code, response_text)
         return
 
+    self.write('ok')
+
+  def custommethod(self):
     self.write('ok')
 
   def post(self):
@@ -188,8 +193,36 @@ class HttpOverWebSocketHandlerTestBase(object):
 
     response_body = yield client.read_message()
     response = json.loads(response_body)
-    self.assertEqual(400, response['status'])
-    self.assertTrue('Body may not be specified' in response['statusText'])
+    self.assertEqual(200, response['status'])
+    self.assertEqual('ok', base64.b64decode(response['data']).decode('utf-8'))
+    self.assertEqual('1234', response['message_id'])
+    self.assertTrue(response['done'])
+
+  @testing.gen_test
+  def test_proxied_post_no_body(self):
+    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client.write_message(
+        self.get_request_json('/api/sessions', '1234', body=None))
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+    self.assertEqual(200, response['status'])
+    self.assertEqual('ok', base64.b64decode(response['data']).decode('utf-8'))
+    self.assertEqual('1234', response['message_id'])
+    self.assertTrue(response['done'])
+
+  @testing.gen_test
+  def test_proxied_nonstandard_method(self):
+    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client.write_message(
+        self.get_request_json(
+            '/api/sessions', '1234', method='CUSTOMMETHOD', body=None))
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+    self.assertEqual(200, response['status'])
+    self.assertEqual('ok', base64.b64decode(response['data']).decode('utf-8'))
+    self.assertEqual('1234', response['message_id'])
     self.assertTrue(response['done'])
 
   @testing.gen_test
@@ -378,7 +411,7 @@ class HttpOverWebSocketHandlerTestBase(object):
   @testing.gen_test
   def test_current_version_requested(self):
     request = self.get_ws_connection_request()
-    request.url += '?min_version=0.0.1a2'
+    request.url += '?min_version=0.0.1a3'
 
     client = yield websocket.websocket_connect(request)
     client.write_message('abc')

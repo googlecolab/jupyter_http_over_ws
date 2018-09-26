@@ -26,7 +26,7 @@ from tornado import httputil
 from tornado import stack_context
 from tornado import websocket
 
-HANDLER_VERSION = version.StrictVersion('0.0.1a2')
+HANDLER_VERSION = version.StrictVersion('0.0.1a3')
 
 
 class HttpOverWebSocketHandler(websocket.WebSocketHandler,
@@ -36,8 +36,6 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
   _REQUIRED_KEYS = {'path', 'method', 'message_id'}
 
   _REQUIRE_XSRF_FORWARDING_METHODS = {'DELETE', 'PATCH', 'POST', 'PUT'}
-
-  _REQUIRE_NO_BODY_METHODS = {'GET', 'HEAD'}
 
   def __init__(self, *args, **kwargs):
     websocket.WebSocketHandler.__init__(self, *args, **kwargs)
@@ -110,13 +108,6 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
       if xsrf:
         query += '_xsrf={}'.format(xsrf)
 
-    body = contents.get('body')
-    if method in self._REQUIRE_NO_BODY_METHODS and body is not None:
-      msg = ('Invalid request: Body may not be specified for method "{}".'
-            ).format(method)
-      self._write_error(status=400, msg=msg)
-      return
-
     path = urlparse.urlunsplit(
         urlparse.SplitResult(
             scheme=self.request.protocol,
@@ -134,7 +125,8 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
         body=contents.get('body'),
         ca_certs=self.ca_certs,
         header_callback=emitter.header_callback,
-        streaming_callback=emitter.streaming_callback)
+        streaming_callback=emitter.streaming_callback,
+        allow_nonstandard_methods=True)
     _modify_proxy_request_test_only(proxy_request)
 
     http_client = self._get_http_client()
