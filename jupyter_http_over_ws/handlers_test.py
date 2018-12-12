@@ -450,6 +450,78 @@ class HttpOverWebSocketHandlerTestBase(object):
       self.assertEqual(500, response['status'])
       self.assertTrue(expect_log.logged_stack)
 
+  @testing.gen_test
+  def test_diagnostic_handler_unwhitelisted_cross_domain_origin(self):
+    request = self.get_ws_connection_request(
+        http_over_ws_url='http_over_websocket/diagnose')
+    request.headers.add('Origin', 'http://www.example.com')
+    with self.assertRaises(httpclient.HTTPError) as e:
+      yield websocket.websocket_connect(request)
+
+    self.assertEquals(403, e.exception.code)
+
+  @testing.gen_test
+  def test_diagnostic_handler_no_problems_request(self):
+    request = self.get_ws_connection_request(
+        http_over_ws_url='http_over_websocket/diagnose')
+    request.url += '?min_version=0.0.2'
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Cookie', '_xsrf=5678')
+
+    client = yield websocket.websocket_connect(request)
+    self.assertNotEqual(None, client)
+    client.write_message('1')
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+
+    self.assertEqual({
+        'message_id': '1',
+        'extension_version': '0.0.2',
+        'has_authentication_cookie': True,
+        'is_outdated_extension': False
+    }, response)
+
+  @testing.gen_test
+  def test_diagnostic_handler_missing_xsrf_cookie(self):
+    request = self.get_ws_connection_request(
+        http_over_ws_url='http_over_websocket/diagnose')
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+
+    client = yield websocket.websocket_connect(request)
+    client.write_message('1')
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+
+    self.assertEqual({
+        'message_id': '1',
+        'extension_version': '0.0.2',
+        'has_authentication_cookie': False,
+        'is_outdated_extension': False
+    }, response)
+
+  @testing.gen_test
+  def test_diagnostic_handler_newer_protocol_version_requested(self):
+    request = self.get_ws_connection_request(
+        http_over_ws_url='http_over_websocket/diagnose')
+    request.url += '?min_version=0.0.3'
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Cookie', '_xsrf=5678')
+
+    client = yield websocket.websocket_connect(request)
+    client.write_message('1')
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+
+    self.assertEqual({
+        'message_id': '1',
+        'extension_version': '0.0.2',
+        'has_authentication_cookie': True,
+        'is_outdated_extension': True
+    }, response)
+
 
 class HttpOverWebSocketHandlerHttpTest(HttpOverWebSocketHandlerTestBase,
                                        testing.AsyncHTTPTestCase):

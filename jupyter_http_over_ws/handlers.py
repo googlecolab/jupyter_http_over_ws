@@ -14,9 +14,11 @@
 """Jupyter server extension which supports HTTP-over-websocket communication."""
 
 import base64
+import collections
 import json
 
 from distutils import version
+from enum import Enum
 
 from notebook.base import handlers
 from six.moves import urllib_parse as urlparse
@@ -26,7 +28,76 @@ from tornado import httputil
 from tornado import stack_context
 from tornado import websocket
 
-HANDLER_VERSION = version.StrictVersion('0.0.1a3')
+HANDLER_VERSION = version.StrictVersion('0.0.2')
+
+ExtensionVersionResult = collections.namedtuple('ExtensionVersionResult', [
+    'error_reason',
+    'requested_extension_version',
+])
+
+
+class ExtensionValidationError(Enum):
+  UNPARSEABLE_REQUESTED_VERSION = 1
+  OUTDATED_VERSION = 2
+
+
+class HttpOverWebSocketDiagnosticHandler(websocket.WebSocketHandler,
+                                         handlers.IPythonHandler):
+  """Socket handler that provides connection diagnostics."""
+
+  def __init__(self, *args, **kwargs):
+    websocket.WebSocketHandler.__init__(self, *args, **kwargs)
+    handlers.IPythonHandler.__init__(self, *args, **kwargs)
+
+  def check_origin(self, origin):
+    # The IPythonHandler implementation of check_origin uses the
+    # NotebookApp.allow_origin setting.
+    return handlers.IPythonHandler.check_origin(self, origin)
+
+  def on_message(self, message):
+    extension_version_result = _validate_min_version(
+        self.get_argument('min_version', None))
+
+    self.write_message(
+        json.dumps({
+            'message_id':
+                message,
+            'extension_version':
+                str(HANDLER_VERSION),
+            'has_authentication_cookie':
+                bool(self.get_cookie('_xsrf')),
+            'is_outdated_extension': (
+                extension_version_result.error_reason ==
+                ExtensionValidationError.OUTDATED_VERSION),
+        }))
+
+
+def _validate_min_version(min_version):
+  """Validates the extension version matches the requested version.
+
+  Args:
+    min_version: Minimum version passed as a query param when establishing the
+      connection.
+
+  Returns:
+    An ExtensionVersionResult indicating validation status. If there is a
+    problem, the error_reason field will be non-empty.
+  """
+  if min_version is not None:
+    try:
+      parsed_min_version = version.StrictVersion(min_version)
+    except ValueError:
+      return ExtensionVersionResult(
+          error_reason=ExtensionValidationError.UNPARSEABLE_REQUESTED_VERSION,
+          requested_extension_version=min_version)
+
+    if parsed_min_version > HANDLER_VERSION:
+      return ExtensionVersionResult(
+          error_reason=ExtensionValidationError.OUTDATED_VERSION,
+          requested_extension_version=str(parsed_min_version))
+
+  return ExtensionVersionResult(
+      error_reason=None, requested_extension_version=min_version)
 
 
 class HttpOverWebSocketHandler(websocket.WebSocketHandler,
@@ -64,21 +135,19 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
 
   def open(self):
     min_version = self.get_argument('min_version', None)
-    if min_version is not None:
-      try:
-        parsed_min_version = version.StrictVersion(min_version)
-      except ValueError:
-        self.close(
-            code=400,
-            reason='Invalid "min_version" provided: {}'.format(min_version))
-        return
-
-      if parsed_min_version > HANDLER_VERSION:
-        reason = ('Requested version ({}) > Current version ({}). Please '
-                  'upgrade this package.').format(parsed_min_version,
-                                                  HANDLER_VERSION)
-        self.log.error('Rejecting connection: %s', reason)
-        self.close(code=400, reason=reason)
+    result = _validate_min_version(min_version)
+    if (result.error_reason ==
+        ExtensionValidationError.UNPARSEABLE_REQUESTED_VERSION):
+      self.close(
+          code=400,
+          reason='Invalid "min_version" provided: {}'.format(min_version))
+      return
+    elif result.error_reason == ExtensionValidationError.OUTDATED_VERSION:
+      reason = ('Requested version ({}) > Current version ({}). Please '
+                'upgrade this package.').format(
+                    result.requested_extension_version, HANDLER_VERSION)
+      self.log.error('Rejecting connection: %s', reason)
+      self.close(code=400, reason=reason)
 
   def _get_http_client(self):
     """Test hook to allow a different HTTPClient implementation."""
