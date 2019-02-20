@@ -20,7 +20,7 @@ from setuptools import setup
 
 DEPENDENCIES = (
     'notebook>=5.0',
-    'six>=1.4.0',
+    'six>=1.6.0',
     'tornado>=4.5',
 )
 
