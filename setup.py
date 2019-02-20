@@ -29,7 +29,7 @@ if sys.version_info[0] == 2:
 
 setup(
     name='jupyter_http_over_ws',
-    version='0.0.2',
+    version='0.0.3',
     author='Google Colaboratory team',
     author_email='colaboratory-team@google.com',
     description='Jupyter support for HTTP-over-ws',

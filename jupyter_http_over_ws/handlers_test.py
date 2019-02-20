@@ -464,7 +464,7 @@ class HttpOverWebSocketHandlerTestBase(object):
   def test_diagnostic_handler_no_problems_request(self):
     request = self.get_ws_connection_request(
         http_over_ws_url='http_over_websocket/diagnose')
-    request.url += '?min_version=0.0.2'
+    request.url += '?min_version=0.0.3'
     request.headers.add('Origin', WHITELISTED_ORIGIN)
     request.headers.add('Cookie', '_xsrf=5678')
 
@@ -477,7 +477,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
     self.assertEqual({
         'message_id': '1',
-        'extension_version': '0.0.2',
+        'extension_version': '0.0.3',
         'has_authentication_cookie': True,
         'is_outdated_extension': False
     }, response)
@@ -496,7 +496,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
     self.assertEqual({
         'message_id': '1',
-        'extension_version': '0.0.2',
+        'extension_version': '0.0.3',
         'has_authentication_cookie': False,
         'is_outdated_extension': False
     }, response)
@@ -505,7 +505,7 @@ class HttpOverWebSocketHandlerTestBase(object):
   def test_diagnostic_handler_newer_protocol_version_requested(self):
     request = self.get_ws_connection_request(
         http_over_ws_url='http_over_websocket/diagnose')
-    request.url += '?min_version=0.0.3'
+    request.url += '?min_version=0.0.4'
     request.headers.add('Origin', WHITELISTED_ORIGIN)
     request.headers.add('Cookie', '_xsrf=5678')
 
@@ -517,7 +517,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
     self.assertEqual({
         'message_id': '1',
-        'extension_version': '0.0.2',
+        'extension_version': '0.0.3',
         'has_authentication_cookie': True,
         'is_outdated_extension': True
     }, response)
