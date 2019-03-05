@@ -28,7 +28,7 @@ from tornado import httputil
 from tornado import stack_context
 from tornado import websocket
 
-HANDLER_VERSION = version.StrictVersion('0.0.3')
+HANDLER_VERSION = version.StrictVersion('0.0.4')
 
 ExtensionVersionResult = collections.namedtuple('ExtensionVersionResult', [
     'error_reason',
