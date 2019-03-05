@@ -15,6 +15,7 @@
 
 import base64
 import json
+import os
 
 import jupyter_http_over_ws
 from jupyter_http_over_ws import handlers
@@ -538,10 +539,20 @@ class HttpOverWebSocketHandlerHttpTest(HttpOverWebSocketHandlerTestBase,
 class HttpOverWebSocketHandlerHttpsTest(HttpOverWebSocketHandlerTestBase,
                                         testing.AsyncHTTPSTestCase):
 
+  def get_ssl_options(self):
+    # Testing keys were generated with:
+    # openssl req -new -keyout jupyter_http_over_ws/test/test.key
+    #    -out jupyter_http_over_ws/test/test.crt -newkey rsa:2048 -nodes
+    # -days 3650 -x509
+    module_dir = os.path.dirname(__file__)
+    return {
+        'certfile': os.path.join(module_dir, 'test', 'test.crt'),
+        'keyfile': os.path.join(module_dir, 'test', 'test.key')
+    }
+
   def get_config(self):
-    # AsyncHTTPSTestCase provides a self-signed cert. The proxy client used by
-    # our handler uses the NotebookApp.certfile setting to establish what
-    # certificate authorities are trusted.
+    # The proxy client used by our handler uses the NotebookApp.certfile setting
+    # to establish what certificate authorities are trusted.
     return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
 
   def get_ws_connection_request(self, http_over_ws_url='http_over_websocket'):
