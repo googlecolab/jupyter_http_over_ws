@@ -25,10 +25,11 @@ from six.moves import urllib_parse as urlparse
 from tornado import gen
 from tornado import httpclient
 from tornado import httputil
-from tornado import stack_context
 from tornado import websocket
 
-HANDLER_VERSION = version.StrictVersion('0.0.4')
+# LINT.IfChange(handler_version)
+HANDLER_VERSION = version.StrictVersion('0.0.5')
+# LINT.ThenChange(pkg_files/setup.py:handler_version)
 
 ExtensionVersionResult = collections.namedtuple('ExtensionVersionResult', [
     'error_reason',
@@ -177,7 +178,7 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
       if xsrf:
         query += '_xsrf={}'.format(xsrf)
 
-    path = urlparse.urlunsplit(
+    path = urlparse.urlunsplit(  # pylint:disable=too-many-function-args
         urlparse.SplitResult(
             scheme=self.request.protocol,
             netloc=self.request.host,
@@ -206,10 +207,13 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
     # the proxy is set up, these callbacks will not be used.
     response = yield http_client.fetch(proxy_request, raise_error=False)
     if response.error and not isinstance(response.error, httpclient.HTTPError):
-      with stack_context.ExceptionStackContext(self._log_fetch_error):
+      try:
+        response.rethrow()
+      except Exception:  # pylint:disable=broad-except
         # Rethrow the exception to capture the stack trace and write
         # an error message.
-        response.rethrow()
+        self.log.exception('Uncaught error when proxying request')
+
       self._write_error(
           status=500,
           msg=('Uncaught server-side exception. Check logs for '
@@ -217,14 +221,6 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
       return
 
     emitter.done()
-
-  def _log_fetch_error(self, exc_typ, exc_val, exc_tb):
-    self.log.error(
-        'Uncaught error when proxying request',
-        exc_info=(exc_typ, exc_val, exc_tb))
-    # Returning True causes ExceptionStackContext to not propagate the exception
-    # further.
-    return True
 
 
 class _StreamingResponseEmitter(object):

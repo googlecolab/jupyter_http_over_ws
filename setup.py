@@ -21,7 +21,7 @@ from setuptools import setup
 DEPENDENCIES = (
     'notebook>=5.0',
     'six>=1.6.0',
-    'tornado>=4.5,<6',
+    'tornado>=4.5',
 )
 
 if sys.version_info[0] == 2:
@@ -29,7 +29,9 @@ if sys.version_info[0] == 2:
 
 setup(
     name='jupyter_http_over_ws',
-    version='0.0.4',
+    # LINT.IfChange(handler_version)
+    version='0.0.5',
+    # LINT.ThenChange(../handlers.py:handler_version)
     author='Google Colaboratory team',
     author_email='colaboratory-team@google.com',
     description='Jupyter support for HTTP-over-ws',
