@@ -164,7 +164,12 @@ class HttpOverWebSocketHandlerTestBase(object):
     """Returns an HTTPRequest used to connect to the Tornado server."""
     raise NotImplementedError()
 
-  def get_request_json(self, path, message_id, method='GET', body=None):
+  def get_request_json(self,
+                       path,
+                       message_id,
+                       method='GET',
+                       body=None,
+                       body_base64=None):
     request = {
         'path': path,
         'message_id': message_id,
@@ -172,6 +177,8 @@ class HttpOverWebSocketHandlerTestBase(object):
     }
     if body is not None:
       request['body'] = body
+    if body_base64 is not None:
+      request['body_base64'] = body_base64
     return json.dumps(request)
 
   @testing.gen_test
@@ -209,6 +216,25 @@ class HttpOverWebSocketHandlerTestBase(object):
     response = json.loads(response_body)
     self.assertEqual(200, response['status'])
     self.assertEqual('ok', base64.b64decode(response['data']).decode('utf-8'))
+    self.assertEqual('1234', response['message_id'])
+    self.assertTrue(response['done'])
+
+  @testing.gen_test
+  def test_proxied_post_base64_body(self):
+    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client.write_message(
+        self.get_request_json(
+            '/api/sessions',
+            '1234',
+            method='POST',
+            body_base64=base64.b64encode(
+                'the_data'.encode('utf-8')).decode('utf-8')))
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+    self.assertEqual(200, response['status'])
+    self.assertEqual('the_data',
+                     base64.b64decode(response['data']).decode('utf-8'))
     self.assertEqual('1234', response['message_id'])
     self.assertTrue(response['done'])
 

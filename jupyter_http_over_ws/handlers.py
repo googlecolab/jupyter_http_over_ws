@@ -186,13 +186,19 @@ class HttpOverWebSocketHandler(websocket.WebSocketHandler,
             query=query,
             fragment=''))
 
+    body = None
+    if contents.get('body_base64'):
+      body = base64.b64decode(contents.get('body_base64')).decode('utf-8')
+    else:
+      body = contents.get('body')
+
     emitter = _StreamingResponseEmitter(contents['message_id'],
                                         self.write_message)
     proxy_request = httpclient.HTTPRequest(
         url=path,
         method=method,
         headers=self.request.headers,
-        body=contents.get('body'),
+        body=body,
         ca_certs=self.ca_certs,
         header_callback=emitter.header_callback,
         streaming_callback=emitter.streaming_callback,
