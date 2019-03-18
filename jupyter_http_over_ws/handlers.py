@@ -310,4 +310,4 @@ class _StreamingResponseEmitter(object):
 
 
 def _modify_proxy_request_test_only(unused_request):
-  """Hook for modifying the request before making a fetch (for tests only)."""
+  """Hook for modifying the request before making a fetch (test-only)."""
