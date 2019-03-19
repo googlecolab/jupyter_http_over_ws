@@ -28,7 +28,7 @@ from tornado import httputil
 from tornado import websocket
 
 # LINT.IfChange(handler_version)
-HANDLER_VERSION = version.StrictVersion('0.0.5')
+HANDLER_VERSION = version.StrictVersion('0.0.6')
 # LINT.ThenChange(pkg_files/setup.py:handler_version)
 
 ExtensionVersionResult = collections.namedtuple('ExtensionVersionResult', [
