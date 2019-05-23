@@ -9,7 +9,7 @@ to localhost via WebSocket.
 
 Run the following commands in a shell:
 
-``` shell
+```shell
 pip install jupyter_http_over_ws
 # Optional: Install the extension to run every time the notebook server starts.
 # Adds a /http_over_websocket endpoint to the Tornado notebook server.
@@ -22,7 +22,7 @@ New notebook servers are started normally, though you will need to set a flag to
 explicitly trust WebSocket connections from the host communicating via
 HTTP-over-WebSocket.
 
-``` shell
+```shell
 jupyter notebook \
   --NotebookApp.allow_origin='https://www.example.com' \
   --port=8081
@@ -42,7 +42,7 @@ If the auth cookie isn't present when a connection is attempted, you may see a
 server using the `--no-browser` flag and open the provided link that appears in
 the terminal from the same browser that you would like to connect from:
 
-``` shell
+```shell
 jupyter notebook \
   --NotebookApp.allow_origin='https://www.example.com' \
   --port=8081
