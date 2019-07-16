@@ -360,8 +360,8 @@ class HttpOverWebSocketHandlerTestBase(object):
       responses.append(response)
 
       self.assertEqual('1234', response['message_id'])
-      self.assertTrue(
-          len(base64.b64decode(response['data'])) <= tornado_chunk_size)
+      self.assertLessEqual(
+          len(base64.b64decode(response['data'])), tornado_chunk_size)
 
       if response.get('done'):
         break
@@ -386,7 +386,7 @@ class HttpOverWebSocketHandlerTestBase(object):
     response_body = yield client.read_message()
     response = json.loads(response_body)
     self.assertEqual(400, response['status'])
-    self.assertTrue('body must contain' in response['statusText'])
+    self.assertIn('body must contain', response['statusText'])
     self.assertTrue(response['done'])
 
   @testing.gen_test
