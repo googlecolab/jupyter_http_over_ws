@@ -52,6 +52,16 @@ jupyter notebook \
 If you still see issues, consider retrying the above steps from an incognito
 window which will prevent issues related to browser extensions.
 
+## Uninstallation
+
+The jupyter server extension can be disabled and removed by running the
+following commands in a shell:
+
+```shell
+pip install jupyter_http_over_ws
+jupyter serverextension enable --py jupyter_http_over_ws
+```
+
 ## Contributing
 
 If you have a problem, or see something that could be improved, please file an
