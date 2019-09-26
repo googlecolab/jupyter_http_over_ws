@@ -58,8 +58,8 @@ The jupyter server extension can be disabled and removed by running the
 following commands in a shell:
 
 ```shell
-pip install jupyter_http_over_ws
-jupyter serverextension enable --py jupyter_http_over_ws
+jupyter serverextension disable --py jupyter_http_over_ws
+pip uninstall jupyter_http_over_ws
 ```
 
 ## Contributing
