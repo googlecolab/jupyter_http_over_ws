@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests for package jupyter_http_over_ws."""
 
+import abc
 import base64
 import json
 import os
@@ -20,6 +21,7 @@ import os
 import jupyter_http_over_ws
 from jupyter_http_over_ws import handlers
 
+import six
 from tornado import concurrent
 from tornado import gen
 from tornado import httpclient
@@ -112,17 +114,12 @@ class AlwaysThrowingHTTPOverWebSocketHandler(handlers.HttpOverWebSocketHandler):
 WHITELISTED_ORIGIN = 'http://www.examplewhitelistedorigin.com'
 
 
-class HttpOverWebSocketHandlerTestBase(object):
-  """Base class for all tests to exercise.
+class _TestBase(six.with_metaclass(abc.ABCMeta)):
+  """Base class for providing initial Tornado configuration.
 
   Tornado only provides AsyncHTTPTestCase and AsyncHTTPSTestCase. We'd like to
-  test in both modes. This class has all the test methods that should be run by
-  either type of server. Specific implementations will derive from the
-  appropriate Tornado test class. The only forks in behavior are around initial
-  configuration.
-
-  Subclasses are expected to implement the get_config and
-  get_ws_connection_request methods.
+  run the same suite of tests in both modes and avoid duplicating mechanical
+  server setup.
   """
 
   def get_app(self):
@@ -137,13 +134,7 @@ class HttpOverWebSocketHandlerTestBase(object):
     config = self.get_config()
     if config is not None:
       settings['config'] = config
-    app = web.Application([
-        (r'/api/sessions', FakeSessionsHandler),
-        (r'/api/streamedresponse', FakeStreamedResponseHandler),
-        (r'/api/largeresponse', LargeStreamedResponseHandler),
-        (r'/always_throwing_http_over_ws',
-         AlwaysThrowingHTTPOverWebSocketHandler),
-    ], **settings)
+    app = web.Application(self.get_test_handlers(), **settings)
 
     nb_server_app = FakeNotebookServer(app)
     jupyter_http_over_ws.load_jupyter_server_extension(nb_server_app)
@@ -156,13 +147,47 @@ class HttpOverWebSocketHandlerTestBase(object):
 
     return app
 
+  def get_ssl_options(self):
+    # Testing keys were generated with:
+    # openssl req -new -keyout jupyter_http_over_ws/test/test.key
+    #    -out jupyter_http_over_ws/test/test.crt -newkey rsa:2048 -nodes
+    # -days 3650 -x509
+    module_dir = os.path.dirname(__file__)
+    return {
+        'certfile': os.path.join(module_dir, 'test', 'test.crt'),
+        'keyfile': os.path.join(module_dir, 'test', 'test.key')
+    }
+
+  @abc.abstractmethod
   def get_config(self):
     """Initialize any Tornado-specific config when server is started."""
     raise NotImplementedError()
 
-  def get_ws_connection_request(self, http_over_ws_url='http_over_websocket'):
+  @abc.abstractmethod
+  def get_test_handlers(self):
+    """Provide any test-specific handlers to initialize the test application."""
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def get_ws_connection_request(self, path):
     """Returns an HTTPRequest used to connect to the Tornado server."""
     raise NotImplementedError()
+
+
+class _HttpOverWebSocketHandlerTestBase(_TestBase):
+  """Base class for all tests for /http_over_websocket.
+
+  Subclasses are expected to implement the get_ws_connection_request method.
+  """
+
+  def get_test_handlers(self):
+    return [
+        (r'/api/sessions', FakeSessionsHandler),
+        (r'/api/streamedresponse', FakeStreamedResponseHandler),
+        (r'/api/largeresponse', LargeStreamedResponseHandler),
+        (r'/always_throwing_http_over_ws',
+         AlwaysThrowingHTTPOverWebSocketHandler),
+    ]
 
   def get_request_json(self,
                        path,
@@ -183,7 +208,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_proxied_get(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(self.get_request_json('/api/sessions', '1234'))
 
     response_body = yield client.read_message()
@@ -195,7 +221,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_proxied_get_empty_body(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(
         self.get_request_json('/api/sessions', '1234', body=''))
 
@@ -208,7 +235,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_proxied_post_no_body(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(
         self.get_request_json('/api/sessions', '1234', body=None))
 
@@ -221,7 +249,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_proxied_post_base64_body(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(
         self.get_request_json(
             '/api/sessions',
@@ -240,7 +269,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_proxied_nonstandard_method(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(
         self.get_request_json(
             '/api/sessions', '1234', method='CUSTOMMETHOD', body=None))
@@ -254,7 +284,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_streamed_response(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(self.get_request_json('/api/streamedresponse', '1234'))
 
     # The /api/streamedresponse handler yields a body split over two response.
@@ -281,7 +312,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_request_for_invalid_url(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(self.get_request_json('/invalid/path', '1234'))
 
     response_body = yield client.read_message()
@@ -292,7 +324,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_proxied_endpoint_has_error(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     # Force a 500 response. See _CANNED_RESPONSES
     client.write_message(
         self.get_request_json('/api/sessions?throw_500=1', '1234'))
@@ -306,7 +339,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_unwhitelisted_cross_domain_origin(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.headers.add('Origin', 'http://www.example.com')
     with self.assertRaises(httpclient.HTTPError) as e:
       yield websocket.websocket_connect(request)
@@ -315,14 +348,14 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_whitelisted_cross_domain_origin(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.headers.add('Origin', WHITELISTED_ORIGIN)
     client = yield websocket.websocket_connect(request)
     self.assertNotEqual(None, client)
 
   @testing.gen_test
   def test_propagates_body_text_and_xsrf(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.headers.add('Cookie', '_xsrf=5678')
     client = yield websocket.websocket_connect(request)
     client.write_message(
@@ -347,7 +380,8 @@ class HttpOverWebSocketHandlerTestBase(object):
     # Tornado itself does not make this parameter configurable, so add a
     # regression test here to ensure the default does not change. Reference:
     # https://github.com/tornadoweb/tornado/blob/master/tornado/http1connection.py#L76
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message(self.get_request_json('/api/largeresponse', '1234'))
 
     # Read all responses and ensure that they are smaller than the 64K limit.
@@ -368,7 +402,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_bad_json(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     client.write_message('invalid json')
 
     response_body = yield client.read_message()
@@ -379,7 +414,8 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_missing_param(self):
-    client = yield websocket.websocket_connect(self.get_ws_connection_request())
+    client = yield websocket.websocket_connect(
+        self.get_ws_connection_request('http_over_websocket'))
     # Missing the 'method' parameter.
     client.write_message('{"path": "/api/sessions", "method": "GET"}')
 
@@ -391,7 +427,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_invalid_protocol_version_requested(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.url += '?min_version=abc'
 
     client = yield websocket.websocket_connect(request)
@@ -403,7 +439,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_newer_protocol_version_requested(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.url += '?min_version=9.0.0'
 
     with testing.ExpectLog(
@@ -420,7 +456,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_valid_version_requested(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.url += '?min_version=0.0.1a0'
 
     client = yield websocket.websocket_connect(request)
@@ -437,7 +473,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_current_version_requested(self):
-    request = self.get_ws_connection_request()
+    request = self.get_ws_connection_request('http_over_websocket')
     request.url += '?min_version=0.0.1a3'
 
     client = yield websocket.websocket_connect(request)
@@ -477,10 +513,39 @@ class HttpOverWebSocketHandlerTestBase(object):
       self.assertEqual(500, response['status'])
       self.assertTrue(expect_log.logged_stack)
 
+
+class HttpOverWebSocketHandlerHttpTest(_HttpOverWebSocketHandlerTestBase,
+                                       testing.AsyncHTTPTestCase):
+
+  def get_config(self):
+    return
+
+  def get_ws_connection_request(self, path):
+    ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
+    return httpclient.HTTPRequest(url=ws_url)
+
+
+class HttpOverWebSocketHandlerHttpsTest(_HttpOverWebSocketHandlerTestBase,
+                                        testing.AsyncHTTPSTestCase):
+
+  def get_config(self):
+    # The proxy client used by our handler uses the NotebookApp.certfile setting
+    # to establish what certificate authorities are trusted.
+    return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
+
+  def get_ws_connection_request(self, path):
+    ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(), path)
+    return httpclient.HTTPRequest(url=ws_url, validate_cert=False)
+
+
+class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
+
+  def get_test_handlers(self):
+    return []
+
   @testing.gen_test
   def test_diagnostic_handler_unwhitelisted_cross_domain_origin(self):
-    request = self.get_ws_connection_request(
-        http_over_ws_url='http_over_websocket/diagnose')
+    request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.headers.add('Origin', 'http://www.example.com')
     with self.assertRaises(httpclient.HTTPError) as e:
       yield websocket.websocket_connect(request)
@@ -489,8 +554,7 @@ class HttpOverWebSocketHandlerTestBase(object):
 
   @testing.gen_test
   def test_diagnostic_handler_no_problems_request(self):
-    request = self.get_ws_connection_request(
-        http_over_ws_url='http_over_websocket/diagnose')
+    request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.url += '?min_version=0.0.6'
     request.headers.add('Origin', WHITELISTED_ORIGIN)
     request.headers.add('Cookie', '_xsrf=5678')
@@ -502,17 +566,17 @@ class HttpOverWebSocketHandlerTestBase(object):
     response_body = yield client.read_message()
     response = json.loads(response_body)
 
-    self.assertEqual({
-        'message_id': '1',
-        'extension_version': '0.0.6',
-        'has_authentication_cookie': True,
-        'is_outdated_extension': False
-    }, response)
+    self.assertEqual(
+        {
+            'message_id': '1',
+            'extension_version': '0.0.6',
+            'has_authentication_cookie': True,
+            'is_outdated_extension': False
+        }, response)
 
   @testing.gen_test
   def test_diagnostic_handler_missing_xsrf_cookie(self):
-    request = self.get_ws_connection_request(
-        http_over_ws_url='http_over_websocket/diagnose')
+    request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.headers.add('Origin', WHITELISTED_ORIGIN)
 
     client = yield websocket.websocket_connect(request)
@@ -521,17 +585,17 @@ class HttpOverWebSocketHandlerTestBase(object):
     response_body = yield client.read_message()
     response = json.loads(response_body)
 
-    self.assertEqual({
-        'message_id': '1',
-        'extension_version': '0.0.6',
-        'has_authentication_cookie': False,
-        'is_outdated_extension': False
-    }, response)
+    self.assertEqual(
+        {
+            'message_id': '1',
+            'extension_version': '0.0.6',
+            'has_authentication_cookie': False,
+            'is_outdated_extension': False
+        }, response)
 
   @testing.gen_test
   def test_diagnostic_handler_newer_protocol_version_requested(self):
-    request = self.get_ws_connection_request(
-        http_over_ws_url='http_over_websocket/diagnose')
+    request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.url += '?min_version=0.0.7'
     request.headers.add('Origin', WHITELISTED_ORIGIN)
     request.headers.add('Cookie', '_xsrf=5678')
@@ -542,46 +606,34 @@ class HttpOverWebSocketHandlerTestBase(object):
     response_body = yield client.read_message()
     response = json.loads(response_body)
 
-    self.assertEqual({
-        'message_id': '1',
-        'extension_version': '0.0.6',
-        'has_authentication_cookie': True,
-        'is_outdated_extension': True
-    }, response)
+    self.assertEqual(
+        {
+            'message_id': '1',
+            'extension_version': '0.0.6',
+            'has_authentication_cookie': True,
+            'is_outdated_extension': True
+        }, response)
 
 
-class HttpOverWebSocketHandlerHttpTest(HttpOverWebSocketHandlerTestBase,
-                                       testing.AsyncHTTPTestCase):
+class HttpOverWebSocketDiagnoseHandlerHttpTest(
+    _HttpOverWebSocketDiagnoseHandlerTestBase, testing.AsyncHTTPTestCase):
 
   def get_config(self):
     return None
 
-  def get_ws_connection_request(self, http_over_ws_url='http_over_websocket'):
-    ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(),
-                                           http_over_ws_url)
+  def get_ws_connection_request(self, path):
+    ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
     return httpclient.HTTPRequest(url=ws_url)
 
 
-class HttpOverWebSocketHandlerHttpsTest(HttpOverWebSocketHandlerTestBase,
-                                        testing.AsyncHTTPSTestCase):
-
-  def get_ssl_options(self):
-    # Testing keys were generated with:
-    # openssl req -new -keyout jupyter_http_over_ws/test/test.key
-    #    -out jupyter_http_over_ws/test/test.crt -newkey rsa:2048 -nodes
-    # -days 3650 -x509
-    module_dir = os.path.dirname(__file__)
-    return {
-        'certfile': os.path.join(module_dir, 'test', 'test.crt'),
-        'keyfile': os.path.join(module_dir, 'test', 'test.key')
-    }
+class HttpOverWebSocketDiagnoseHandlerHttpsTest(
+    _HttpOverWebSocketDiagnoseHandlerTestBase, testing.AsyncHTTPSTestCase):
 
   def get_config(self):
     # The proxy client used by our handler uses the NotebookApp.certfile setting
     # to establish what certificate authorities are trusted.
     return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
 
-  def get_ws_connection_request(self, http_over_ws_url='http_over_websocket'):
-    ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(),
-                                            http_over_ws_url)
+  def get_ws_connection_request(self, path):
+    ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(), path)
     return httpclient.HTTPRequest(url=ws_url, validate_cert=False)
