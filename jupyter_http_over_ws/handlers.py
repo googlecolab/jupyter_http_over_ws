@@ -309,5 +309,117 @@ class _StreamingResponseEmitter(object):
     }
 
 
+class _ProxiedSocketHandler(websocket.WebSocketHandler,
+                            handlers.IPythonHandler):
+  """Socket handler that proxies a websocket connection.
+
+  This creates a remote websocket connection and does bidirectional forwarding
+  of messages to the remote URL. This intermediary allows attaching additional
+  headers and/or cookies to the proxied connection if desired.
+
+  Note: There are two WebSockets being referenced in this implementation. The
+  "server WS" refers to the WebSocket serviced by this handler and connected to
+  from a browser. The "proxied WS" refers to the local WebSocket connection that
+  this server forwards requests to.
+  """
+
+  _PATH_PREFIX = '/http_over_websocket/proxied_ws/'
+  _PATH = _PATH_PREFIX + '.+'
+
+  _PROTOCOL_MAP = {
+      'http': 'ws',
+      'https': 'wss',
+  }
+
+  def __init__(self, *args, **kwargs):
+    websocket.WebSocketHandler.__init__(self, *args, **kwargs)
+    handlers.IPythonHandler.__init__(self, *args, **kwargs)
+
+    ca_certs = None
+    if self.request.protocol == 'https':
+      ca_certs = self.config.get('NotebookApp', {}).get('certfile')
+      if not ca_certs:
+        raise ValueError('HTTPS requires the NotebookApp.certfile setting to '
+                         'be present.')
+    self.ca_certs = ca_certs
+    self._proxied_ws_future = None
+
+  def check_origin(self, origin):
+    # The IPythonHandler implementation of check_origin uses the
+    # NotebookApp.allow_origin setting.
+    return handlers.IPythonHandler.check_origin(self, origin)
+
+  @gen.coroutine
+  def open(self):
+    # Only proxy local connections.
+    proxy_path = self.request.uri.replace(self._PATH_PREFIX, '/')
+    proxy_url = '{}://{}{}'.format(self._PROTOCOL_MAP[self.request.protocol],
+                                   self.request.host, proxy_path)
+    self.log.info('proxying WebSocket connection to: {}'.format(proxy_url))
+    proxy_request = httpclient.HTTPRequest(
+        url=proxy_url,
+        method='GET',
+        headers=self.request.headers,
+        body=None,
+        ca_certs=self.ca_certs)
+    _modify_proxy_request_test_only(proxy_request)
+
+    self._proxied_ws_future = websocket.websocket_connect(
+        proxy_request, on_message_callback=self._on_proxied_message)
+    raise gen.Return(self._get_proxied_ws())
+
+  @gen.coroutine
+  def _get_proxied_ws(self):
+    if not self._proxied_ws_future:
+      raise gen.Return()
+
+    try:
+      client = yield self._proxied_ws_future
+    except Exception as e:  # pylint:disable=broad-except
+      self.log.exception('Uncaught error when proxying request')
+      code = 500
+      if isinstance(e, httpclient.HTTPError):
+        code = e.code
+      self.close(code, 'Uncaught error when proxying request')
+    else:
+      raise gen.Return(client)
+
+  @gen.coroutine
+  def _on_proxied_message(self, message):
+    # A message was received from the proxied WebSocket. Write this the server
+    # WebSocket.
+    if not message:
+      # Proxied WebSocket connection is closed. Close the server's connection as
+      # well.
+      proxied_ws = yield self._get_proxied_ws()
+      self.close(proxied_ws.close_code if proxied_ws else 500,
+                 proxied_ws.close_reason if proxied_ws else 'Unknown')
+      raise gen.Return()
+
+    self.write_message(message)
+
+  @gen.coroutine
+  def on_close(self):
+    # Server's WebSocket connection was closed. Attempt to close the proxied
+    # WebSocket.
+    proxied_ws = yield self._get_proxied_ws()
+    if proxied_ws:
+      proxied_ws.close(self.close_code or 500, self.close_reason or 'Unknown')
+
+  @gen.coroutine
+  def on_message(self, message):
+    # Received message from our server's WebSocket - forward this to the proxied
+    # WebSocket.
+    proxied_ws = yield self._get_proxied_ws()
+    if proxied_ws:
+      proxied_ws.write_message(message)
+      raise gen.Return()
+
+    # If the proxied WebSocket has been closed or hasn't yet been established,
+    # there's nothing to do but terminate the server's connection.
+    self.close(proxied_ws.close_code if proxied_ws else 500,
+               proxied_ws.close_reason if proxied_ws else 'Unknown')
+
+
 def _modify_proxy_request_test_only(unused_request):
   """Hook for modifying the request before making a fetch (test-only)."""

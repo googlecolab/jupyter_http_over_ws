@@ -351,7 +351,7 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
     request = self.get_ws_connection_request('http_over_websocket')
     request.headers.add('Origin', WHITELISTED_ORIGIN)
     client = yield websocket.websocket_connect(request)
-    self.assertNotEqual(None, client)
+    self.assertIsNotNone(client)
 
   @testing.gen_test
   def test_propagates_body_text_and_xsrf(self):
@@ -560,7 +560,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
     request.headers.add('Cookie', '_xsrf=5678')
 
     client = yield websocket.websocket_connect(request)
-    self.assertNotEqual(None, client)
+    self.assertIsNotNone(client)
     client.write_message('1')
 
     response_body = yield client.read_message()
@@ -619,7 +619,7 @@ class HttpOverWebSocketDiagnoseHandlerHttpTest(
     _HttpOverWebSocketDiagnoseHandlerTestBase, testing.AsyncHTTPTestCase):
 
   def get_config(self):
-    return None
+    return
 
   def get_ws_connection_request(self, path):
     ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
@@ -628,6 +628,143 @@ class HttpOverWebSocketDiagnoseHandlerHttpTest(
 
 class HttpOverWebSocketDiagnoseHandlerHttpsTest(
     _HttpOverWebSocketDiagnoseHandlerTestBase, testing.AsyncHTTPSTestCase):
+
+  def get_config(self):
+    # The proxy client used by our handler uses the NotebookApp.certfile setting
+    # to establish what certificate authorities are trusted.
+    return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
+
+  def get_ws_connection_request(self, path):
+    ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(), path)
+    return httpclient.HTTPRequest(url=ws_url, validate_cert=False)
+
+
+class EchoingWebSocketHandler(websocket.WebSocketHandler):
+
+  def open(self):
+    self.write_message('<ECHO INIT> {} {} X-Echo-Header: {}'.format(
+        self.request.method, self.request.uri,
+        self.request.headers['X-Echo-Header']))
+
+  def on_message(self, message):
+    self.write_message('<ECHO RESPONSE> {}'.format(message))
+
+  def check_origin(self, origin):
+    return True
+
+
+class PrintRequestDetailsWebSocketHandler(websocket.WebSocketHandler):
+
+  def open(self):
+    self.write_message('<ECHO INIT> {} {} X-Echo-Header: {}'.format(
+        self.request.method, self.request.uri,
+        self.request.headers['X-Echo-Header']))
+
+  def on_message(self, message):
+    self.write_message('<ECHO RESPONSE> {}'.format(message))
+
+  def check_origin(self, origin):
+    return True
+
+
+class CloseOnFirstMessageWebSocketHandler(websocket.WebSocketHandler):
+
+  def on_message(self, message):
+    self.close(code=500)
+
+  def check_origin(self, origin):
+    return True
+
+
+class _ProxiedSocketHandlerTestBase(_TestBase):
+
+  def get_test_handlers(self):
+    return [
+        (handlers._ProxiedSocketHandler._PATH, handlers._ProxiedSocketHandler),
+        (r'/print-request-details-ws', PrintRequestDetailsWebSocketHandler),
+        (r'/echoing-ws', EchoingWebSocketHandler),
+        (r'/close-on-first-message-ws', CloseOnFirstMessageWebSocketHandler),
+    ]
+
+  @testing.gen_test
+  def test_unwhitelisted_cross_domain_origin(self):
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/echoing-ws')
+    request.headers.add('Origin', 'http://www.example.com')
+    with self.assertRaises(httpclient.HTTPError) as e:
+      yield websocket.websocket_connect(request)
+
+    self.assertEqual(403, e.exception.code)
+
+  @testing.gen_test
+  def test_proxied_connection_io(self):
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/echoing-ws?someparam=1')
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('X-Echo-Header', 'example')
+
+    client = yield websocket.websocket_connect(request)
+    self.assertIsNotNone(client)
+
+    # EchoingWebSocketHandler writes a message on connection with request
+    # details.
+    initial_message = yield client.read_message()
+    self.assertEqual(
+        '<ECHO INIT> GET /echoing-ws?someparam=1 X-Echo-Header: example',
+        initial_message)
+
+    client.write_message('1')
+    echo_message = yield client.read_message()
+    self.assertEqual('<ECHO RESPONSE> 1', echo_message)
+
+    client.write_message('something else!')
+    echo_message = yield client.read_message()
+    self.assertEqual('<ECHO RESPONSE> something else!', echo_message)
+
+  @testing.gen_test
+  def test_proxied_connection_closed(self):
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/close-on-first-message-ws')
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+
+    client = yield websocket.websocket_connect(request)
+    self.assertIsNotNone(client)
+
+    # Writing a message should cause the connection to be closed.
+    client.write_message('')
+
+    msg = yield client.read_message()
+    # Message of None indicates that the connection has been closed.
+    self.assertIsNone(msg)
+    self.assertEqual(500, client.close_code)
+
+  @testing.gen_test
+  def test_unknown_path(self):
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/unknown-path')
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+
+    client = yield websocket.websocket_connect(request)
+    self.assertIsNotNone(client)
+
+    msg = yield client.read_message()
+    self.assertIsNone(msg)
+    self.assertEqual(404, client.close_code)
+
+
+class ProxiedSocketHandlerTestBaseHttpTest(_ProxiedSocketHandlerTestBase,
+                                           testing.AsyncHTTPTestCase):
+
+  def get_config(self):
+    return
+
+  def get_ws_connection_request(self, path):
+    ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
+    return httpclient.HTTPRequest(url=ws_url)
+
+
+class ProxiedSocketHandlerTestBaseHttpsTest(_ProxiedSocketHandlerTestBase,
+                                            testing.AsyncHTTPSTestCase):
 
   def get_config(self):
     # The proxy client used by our handler uses the NotebookApp.certfile setting
