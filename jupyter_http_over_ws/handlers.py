@@ -42,18 +42,30 @@ class ExtensionValidationError(Enum):
   OUTDATED_VERSION = 2
 
 
-class HttpOverWebSocketDiagnosticHandler(websocket.WebSocketHandler,
-                                         handlers.IPythonHandler):
-  """Socket handler that provides connection diagnostics."""
+class _WebSocketHandlerBase(websocket.WebSocketHandler,
+                            handlers.IPythonHandler):
+  """WebSocket handler to reuse IPythonHandler's authentication mechanisms."""
 
   def __init__(self, *args, **kwargs):
     websocket.WebSocketHandler.__init__(self, *args, **kwargs)
     handlers.IPythonHandler.__init__(self, *args, **kwargs)
 
+    ca_certs = None
+    if self.request.protocol == 'https':
+      ca_certs = self.config.get('NotebookApp', {}).get('certfile')
+      if not ca_certs:
+        raise ValueError('HTTPS requires the NotebookApp.certfile setting to '
+                         'be present.')
+    self.ca_certs = ca_certs
+
   def check_origin(self, origin):
     # The IPythonHandler implementation of check_origin uses the
     # NotebookApp.allow_origin setting.
     return handlers.IPythonHandler.check_origin(self, origin)
+
+
+class HttpOverWebSocketDiagnosticHandler(_WebSocketHandlerBase):
+  """Socket handler that provides connection diagnostics."""
 
   def on_message(self, message):
     extension_version_result = _validate_min_version(
@@ -101,30 +113,12 @@ def _validate_min_version(min_version):
       error_reason=None, requested_extension_version=min_version)
 
 
-class HttpOverWebSocketHandler(websocket.WebSocketHandler,
-                               handlers.IPythonHandler):
+class HttpOverWebSocketHandler(_WebSocketHandlerBase):
   """Socket handler that forwards requests via HTTP to the notebook server."""
 
   _REQUIRED_KEYS = {'path', 'method', 'message_id'}
 
   _REQUIRE_XSRF_FORWARDING_METHODS = {'DELETE', 'PATCH', 'POST', 'PUT'}
-
-  def __init__(self, *args, **kwargs):
-    websocket.WebSocketHandler.__init__(self, *args, **kwargs)
-    handlers.IPythonHandler.__init__(self, *args, **kwargs)
-
-    ca_certs = None
-    if self.request.protocol == 'https':
-      ca_certs = self.config.get('NotebookApp', {}).get('certfile')
-      if not ca_certs:
-        raise ValueError('HTTPS requires the NotebookApp.certfile setting to '
-                         'be present.')
-    self.ca_certs = ca_certs
-
-  def check_origin(self, origin):
-    # The IPythonHandler implementation of check_origin uses the
-    # NotebookApp.allow_origin setting.
-    return handlers.IPythonHandler.check_origin(self, origin)
 
   def _write_error(self, msg, status=500):
     self.write_message(
@@ -309,8 +303,7 @@ class _StreamingResponseEmitter(object):
     }
 
 
-class _ProxiedSocketHandler(websocket.WebSocketHandler,
-                            handlers.IPythonHandler):
+class _ProxiedSocketHandler(_WebSocketHandlerBase):
   """Socket handler that proxies a websocket connection.
 
   This creates a remote websocket connection and does bidirectional forwarding
@@ -332,22 +325,8 @@ class _ProxiedSocketHandler(websocket.WebSocketHandler,
   }
 
   def __init__(self, *args, **kwargs):
-    websocket.WebSocketHandler.__init__(self, *args, **kwargs)
-    handlers.IPythonHandler.__init__(self, *args, **kwargs)
-
-    ca_certs = None
-    if self.request.protocol == 'https':
-      ca_certs = self.config.get('NotebookApp', {}).get('certfile')
-      if not ca_certs:
-        raise ValueError('HTTPS requires the NotebookApp.certfile setting to '
-                         'be present.')
-    self.ca_certs = ca_certs
+    super(_ProxiedSocketHandler, self).__init__(*args, **kwargs)
     self._proxied_ws_future = None
-
-  def check_origin(self, origin):
-    # The IPythonHandler implementation of check_origin uses the
-    # NotebookApp.allow_origin setting.
-    return handlers.IPythonHandler.check_origin(self, origin)
 
   @gen.coroutine
   def open(self):
