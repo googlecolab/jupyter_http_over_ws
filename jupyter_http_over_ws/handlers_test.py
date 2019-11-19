@@ -22,6 +22,7 @@ import jupyter_http_over_ws
 from jupyter_http_over_ws import handlers
 
 import six
+from six.moves import urllib_parse as urlparse
 from tornado import concurrent
 from tornado import gen
 from tornado import httpclient
@@ -68,6 +69,47 @@ class FakeSessionsHandler(web.RequestHandler):
     self.write(self.request.body)
 
 
+class FakeAuthUrlHandler(web.RequestHandler):
+  """Fake of an auth URL handler that sets two cookies.
+
+  This handler is used by RequiresCookieFromFakeAuthHandler and
+  RequiresCookieFromFakeAuthWebSocketHandler.
+  """
+
+  def get(self):
+    if self.get_argument('always_fail', False):
+      self.set_status(500)
+      return
+
+    self.set_cookie('X-Test-Cookie', '1')
+    self.set_cookie('X-Other-Test-Cookie', '2')
+
+
+class RequiresCookieFromFakeAuthHandler(web.RequestHandler):
+  """Handler which requires the two cookies set by FakeAuthUrlHandler."""
+
+  def get(self):
+    first_test_cookie = self.get_cookie('X-Test-Cookie')
+    second_test_cookie = self.get_cookie('X-Other-Test-Cookie')
+
+    self.write('X-Test-Cookie: "{}" X-Other-Test-Cookie: "{}"'.format(
+        first_test_cookie, second_test_cookie))
+
+
+class RequiresCookieFromFakeAuthWebSocketHandler(websocket.WebSocketHandler):
+  """WS handler which requires the two cookies set by FakeAuthUrlHandler."""
+
+  def on_message(self, message):
+    first_test_cookie = self.get_cookie('X-Test-Cookie')
+    second_test_cookie = self.get_cookie('X-Other-Test-Cookie')
+
+    self.write_message('X-Test-Cookie: "{}" X-Other-Test-Cookie: "{}"'.format(
+        first_test_cookie, second_test_cookie))
+
+  def check_origin(self, origin):
+    return True
+
+
 class FakeStreamedResponseHandler(web.RequestHandler):
 
   @gen.coroutine
@@ -94,21 +136,22 @@ class FakeNotebookServer(object):
     self.web_app = app
 
 
+class AlwaysThrowingHTTPClient(httpclient.AsyncHTTPClient):
+
+  def fetch(self, request, *args, **kwargs):
+    future = concurrent.Future()
+    future.set_result(
+        httpclient.HTTPResponse(
+            request=request,
+            code=500,
+            error=ValueError('Expected programming error')))
+    return future
+
+
 class AlwaysThrowingHTTPOverWebSocketHandler(handlers.HttpOverWebSocketHandler):
 
-  class AlwaysThrowingHTTPClient(httpclient.AsyncHTTPClient):
-
-    def fetch(self, request, *args, **kwargs):
-      future = concurrent.Future()
-      future.set_result(
-          httpclient.HTTPResponse(
-              request=request,
-              code=500,
-              error=ValueError('Expected programming error')))
-      return future
-
   def _get_http_client(self):
-    return AlwaysThrowingHTTPOverWebSocketHandler.AlwaysThrowingHTTPClient()
+    return AlwaysThrowingHTTPClient()
 
 
 WHITELISTED_ORIGIN = 'http://www.examplewhitelistedorigin.com'
@@ -169,6 +212,11 @@ class _TestBase(six.with_metaclass(abc.ABCMeta)):
     raise NotImplementedError()
 
   @abc.abstractmethod
+  def get_server_base_url(self):
+    """Returns the server's base url."""
+    raise NotImplementedError()
+
+  @abc.abstractmethod
   def get_ws_connection_request(self, path):
     """Returns an HTTPRequest used to connect to the Tornado server."""
     raise NotImplementedError()
@@ -182,6 +230,9 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
 
   def get_test_handlers(self):
     return [
+        (r'/fake-auth', FakeAuthUrlHandler),
+        (r'/requires-cookies-from-fake-auth',
+         RequiresCookieFromFakeAuthHandler),
         (r'/api/sessions', FakeSessionsHandler),
         (r'/api/streamedresponse', FakeStreamedResponseHandler),
         (r'/api/largeresponse', LargeStreamedResponseHandler),
@@ -489,6 +540,90 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
     self.assertEqual(400, response['status'])
 
   @testing.gen_test
+  def test_auth_url_provided_forwards_cookies(self):
+    auth_url = self.get_server_base_url() + '/fake-auth'
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request('http_over_websocket?' +
+                                             encoded_query_args)
+
+    client = yield websocket.websocket_connect(request)
+    client.write_message(
+        self.get_request_json('/requires-cookies-from-fake-auth', '1234'))
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+    self.assertEqual(200, response['status'])
+    # RequiresCookieFromFakeAuthHandler writes cookies that should have
+    # been received by performing a request to the auth url.
+    self.assertEqual('X-Test-Cookie: "1" X-Other-Test-Cookie: "2"',
+                     base64.b64decode(response['data']).decode('utf-8'))
+    self.assertEqual('1234', response['message_id'])
+    self.assertTrue(response['done'])
+
+  @testing.gen_test
+  def test_auth_url_provided_fails(self):
+    auth_url = self.get_server_base_url() + '/fake-auth?always_fail=1'
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request('http_over_websocket?' +
+                                             encoded_query_args)
+
+    client = yield websocket.websocket_connect(request)
+    client.write_message(
+        self.get_request_json('/requires-cookies-from-fake-auth', '1234'))
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+    self.assertEqual('1234', response['message_id'])
+    self.assertEqual(500, response['status'])
+    self.assertEqual(
+        'Uncaught server-side exception. Check logs for additional details.',
+        response['statusText'])
+    self.assertTrue(response['done'])
+
+  @gen.coroutine
+  def _assertCrossDomainRequestFails(self, auth_url):
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request('http_over_websocket?' +
+                                             encoded_query_args)
+
+    with testing.ExpectLog(
+        'tornado.application',
+        'Uncaught error when proxying request',
+        required=True) as expect_log:
+      client = yield websocket.websocket_connect(request)
+      client.write_message(
+          self.get_request_json('/requires-cookies-from-fake-auth-ws', '1234'))
+
+      response_body = yield client.read_message()
+      response = json.loads(response_body)
+      self.assertEqual('1234', response['message_id'])
+      self.assertEqual(500, response['status'])
+      self.assertEqual(
+          'Uncaught server-side exception. Check logs for additional details.',
+          response['statusText'])
+      self.assertTrue(response['done'])
+      self.assertTrue(expect_log.logged_stack)
+
+  @testing.gen_test
+  def test_auth_url_cross_domain_fails(self):
+    # Cross-domain calls should fail.
+    auth_url = self.get_server_base_url() + '/fake-auth'
+    is_secure = auth_url.startswith('https://')
+    cross_protocol_auth_url = auth_url.replace(
+        'https://', 'http://') if is_secure else auth_url.replace(
+            'http://', 'https://')
+    cross_domain_auth_url = auth_url.replace('localhost', 'www.example.com')
+
+    yield self._assertCrossDomainRequestFails(cross_protocol_auth_url)
+    yield self._assertCrossDomainRequestFails(cross_domain_auth_url)
+
+  @testing.gen_test
   def test_programming_error_propagates(self):
     # Ensure that any programming errors from how the proxy is implemented
     # (i.e. malformed requests) are properly logged.
@@ -520,6 +655,9 @@ class HttpOverWebSocketHandlerHttpTest(_HttpOverWebSocketHandlerTestBase,
   def get_config(self):
     return
 
+  def get_server_base_url(self):
+    return 'http://localhost:{}'.format(self.get_http_port())
+
   def get_ws_connection_request(self, path):
     ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
     return httpclient.HTTPRequest(url=ws_url)
@@ -532,6 +670,9 @@ class HttpOverWebSocketHandlerHttpsTest(_HttpOverWebSocketHandlerTestBase,
     # The proxy client used by our handler uses the NotebookApp.certfile setting
     # to establish what certificate authorities are trusted.
     return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
+
+  def get_server_base_url(self):
+    return 'https://localhost:{}'.format(self.get_http_port())
 
   def get_ws_connection_request(self, path):
     ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(), path)
@@ -621,6 +762,9 @@ class HttpOverWebSocketDiagnoseHandlerHttpTest(
   def get_config(self):
     return
 
+  def get_server_base_url(self):
+    return 'http://localhost:{}'.format(self.get_http_port())
+
   def get_ws_connection_request(self, path):
     ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
     return httpclient.HTTPRequest(url=ws_url)
@@ -633,6 +777,9 @@ class HttpOverWebSocketDiagnoseHandlerHttpsTest(
     # The proxy client used by our handler uses the NotebookApp.certfile setting
     # to establish what certificate authorities are trusted.
     return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
+
+  def get_server_base_url(self):
+    return 'https://localhost:{}'.format(self.get_http_port())
 
   def get_ws_connection_request(self, path):
     ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(), path)
@@ -676,14 +823,27 @@ class CloseOnFirstMessageWebSocketHandler(websocket.WebSocketHandler):
     return True
 
 
+class AlwaysThrowingProxiedSocketHandler(handlers.ProxiedSocketHandler):
+
+  _PATH_PREFIX = '/always_throwing_proxied_ws/'
+  PATH = _PATH_PREFIX + '.+'
+
+  def _get_http_client(self):
+    return AlwaysThrowingHTTPClient()
+
+
 class _ProxiedSocketHandlerTestBase(_TestBase):
 
   def get_test_handlers(self):
     return [
-        (handlers._ProxiedSocketHandler._PATH, handlers._ProxiedSocketHandler),
+        (r'/fake-auth', FakeAuthUrlHandler),
+        (r'/requires-cookies-from-fake-auth-ws',
+         RequiresCookieFromFakeAuthWebSocketHandler),
         (r'/print-request-details-ws', PrintRequestDetailsWebSocketHandler),
         (r'/echoing-ws', EchoingWebSocketHandler),
         (r'/close-on-first-message-ws', CloseOnFirstMessageWebSocketHandler),
+        (AlwaysThrowingProxiedSocketHandler.PATH,
+         AlwaysThrowingProxiedSocketHandler),
     ]
 
   @testing.gen_test
@@ -695,6 +855,80 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
       yield websocket.websocket_connect(request)
 
     self.assertEqual(403, e.exception.code)
+
+  @testing.gen_test
+  def test_auth_url_provided_forwards_cookies(self):
+    auth_url = self.get_server_base_url() + '/fake-auth'
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/requires-cookies-from-fake-auth-ws?' +
+        encoded_query_args)
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+
+    client = yield websocket.websocket_connect(request)
+    self.assertIsNotNone(client)
+
+    client.write_message('')
+    # RequiresCookieFromFakeAuthWebSocketHandler writes cookies that should have
+    # been received by performing a request to the auth url.
+    result = yield client.read_message()
+    self.assertEqual('X-Test-Cookie: "1" X-Other-Test-Cookie: "2"', result)
+
+  @testing.gen_test
+  def test_auth_url_provided_fails(self):
+    auth_url = self.get_server_base_url() + '/fake-auth?always_fail=1'
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/requires-cookies-from-fake-auth-ws?' +
+        encoded_query_args)
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+
+    client = yield websocket.websocket_connect(request)
+    self.assertIsNotNone(client)
+
+    msg = yield client.read_message()
+    self.assertIsNone(msg)
+    self.assertEqual(500, client.close_code)
+
+  @gen.coroutine
+  def _assertCrossDomainRequestFails(self, auth_url):
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request(
+        'http_over_websocket/proxied_ws/requires-cookies-from-fake-auth-ws?' +
+        encoded_query_args)
+    request.headers.add('Origin', WHITELISTED_ORIGIN)
+
+    with testing.ExpectLog(
+        'tornado.application',
+        'Uncaught error when proxying request',
+        required=True) as expect_log:
+      client = yield websocket.websocket_connect(request)
+      self.assertIsNotNone(client)
+
+      msg = yield client.read_message()
+      # Message of None indicates that the connection has been closed.
+      self.assertIsNone(msg)
+      self.assertEqual(500, client.close_code)
+      self.assertTrue(expect_log.logged_stack)
+
+  @testing.gen_test
+  def test_auth_url_cross_domain_fails(self):
+    # Cross-domain calls should fail.
+    auth_url = self.get_server_base_url() + '/fake-auth'
+    is_secure = auth_url.startswith('https://')
+    cross_protocol_auth_url = auth_url.replace(
+        'https://', 'http://') if is_secure else auth_url.replace(
+            'http://', 'https://')
+    cross_domain_auth_url = auth_url.replace('localhost', 'www.example.com')
+
+    yield self._assertCrossDomainRequestFails(cross_protocol_auth_url)
+    yield self._assertCrossDomainRequestFails(cross_domain_auth_url)
 
   @testing.gen_test
   def test_proxied_connection_io(self):
@@ -751,12 +985,45 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
     self.assertIsNone(msg)
     self.assertEqual(404, client.close_code)
 
+  @testing.gen_test
+  def test_auth_url_programming_error_propagates(self):
+    # Ensure that any programming errors from how the proxy is implemented
+    # (i.e. malformed requests) are properly logged.
+
+    # Ideally, there aren't any programming errors in the current
+    # implementation. Should one exist, it would be better to fix it rather than
+    # use it as a test case here.
+    auth_url = self.get_server_base_url() + '/fake-auth'
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+    ws_request = self.get_ws_connection_request(
+        'always_throwing_proxied_ws/requires-cookies-from-fake-auth-ws?' +
+        encoded_query_args)
+
+    with testing.ExpectLog(
+        'tornado.application',
+        'Uncaught error when proxying request',
+        required=True) as expect_log:
+      client = yield websocket.websocket_connect(ws_request)
+      self.assertIsNotNone(client)
+
+      msg = yield client.read_message()
+      # Message of None indicates that the connection has been closed.
+      self.assertIsNone(msg)
+      self.assertEqual(500, client.close_code)
+      self.assertEqual('Uncaught error when proxying request',
+                       client.close_reason)
+      self.assertTrue(expect_log.logged_stack)
+
 
 class ProxiedSocketHandlerTestBaseHttpTest(_ProxiedSocketHandlerTestBase,
                                            testing.AsyncHTTPTestCase):
 
   def get_config(self):
     return
+
+  def get_server_base_url(self):
+    return 'http://localhost:{}'.format(self.get_http_port())
 
   def get_ws_connection_request(self, path):
     ws_url = 'ws://localhost:{}/{}'.format(self.get_http_port(), path)
@@ -770,6 +1037,9 @@ class ProxiedSocketHandlerTestBaseHttpsTest(_ProxiedSocketHandlerTestBase,
     # The proxy client used by our handler uses the NotebookApp.certfile setting
     # to establish what certificate authorities are trusted.
     return {'NotebookApp': {'certfile': self.get_ssl_options()['certfile'],}}
+
+  def get_server_base_url(self):
+    return 'https://localhost:{}'.format(self.get_http_port())
 
   def get_ws_connection_request(self, path):
     ws_url = 'wss://localhost:{}/{}'.format(self.get_http_port(), path)

@@ -21,6 +21,7 @@ from distutils import version
 from enum import Enum
 
 from notebook.base import handlers
+from six.moves import http_cookies
 from six.moves import urllib_parse as urlparse
 from tornado import gen
 from tornado import httpclient
@@ -40,6 +41,15 @@ ExtensionVersionResult = collections.namedtuple('ExtensionVersionResult', [
 class ExtensionValidationError(Enum):
   UNPARSEABLE_REQUESTED_VERSION = 1
   OUTDATED_VERSION = 2
+
+
+_PROTOCOL_MAP = {
+    'http': 'ws',
+    'https': 'wss',
+}
+
+_MIN_VERSION_QUERY_PARAM = 'min_version'
+_AUTH_URL_QUERY_PARAM = 'jupyter_http_over_ws_auth_url'
 
 
 class _WebSocketHandlerBase(websocket.WebSocketHandler,
@@ -67,9 +77,11 @@ class _WebSocketHandlerBase(websocket.WebSocketHandler,
 class HttpOverWebSocketDiagnosticHandler(_WebSocketHandlerBase):
   """Socket handler that provides connection diagnostics."""
 
+  PATH = '/http_over_websocket/diagnose'
+
   def on_message(self, message):
     extension_version_result = _validate_min_version(
-        self.get_argument('min_version', None))
+        self.get_argument(_MIN_VERSION_QUERY_PARAM, None))
 
     self.write_message(
         json.dumps({
@@ -116,20 +128,25 @@ def _validate_min_version(min_version):
 class HttpOverWebSocketHandler(_WebSocketHandlerBase):
   """Socket handler that forwards requests via HTTP to the notebook server."""
 
+  PATH = '/http_over_websocket'
+
   _REQUIRED_KEYS = {'path', 'method', 'message_id'}
 
   _REQUIRE_XSRF_FORWARDING_METHODS = {'DELETE', 'PATCH', 'POST', 'PUT'}
 
-  def _write_error(self, msg, status=500):
-    self.write_message(
-        json.dumps({
-            'done': True,
-            'status': status,
-            'statusText': msg,
-        }))
+  def _write_error(self, msg, status=500, message_id=None):
+    response = {
+        'done': True,
+        'status': status,
+        'statusText': msg,
+    }
+    if message_id:
+      response['message_id'] = message_id
+
+    self.write_message(json.dumps(response))
 
   def open(self):
-    min_version = self.get_argument('min_version', None)
+    min_version = self.get_argument(_MIN_VERSION_QUERY_PARAM, None)
     result = _validate_min_version(min_version)
     if (result.error_reason ==
         ExtensionValidationError.UNPARSEABLE_REQUESTED_VERSION):
@@ -143,10 +160,29 @@ class HttpOverWebSocketHandler(_WebSocketHandlerBase):
                     result.requested_extension_version, HANDLER_VERSION)
       self.log.error('Rejecting connection: %s', reason)
       self.close(code=400, reason=reason)
+      return
 
   def _get_http_client(self):
     """Test hook to allow a different HTTPClient implementation."""
     return httpclient.AsyncHTTPClient()
+
+  @gen.coroutine
+  def _attach_auth_cookies(self):
+    auth_url = self.get_argument(_AUTH_URL_QUERY_PARAM, default='')
+    if not auth_url:
+      raise gen.Return()
+
+    parsed_auth_url = urlparse.urlparse(auth_url)
+
+    try:
+      _validate_same_domain(self.request, parsed_auth_url)
+      extra_cookies = yield _perform_request_and_extract_cookies(
+          parsed_auth_url, self.ca_certs, self._get_http_client())
+    except Exception:  # pylint:disable=broad-except
+      self.log.exception('Uncaught error when proxying request')
+      raise
+
+    self.request.headers.update(extra_cookies)
 
   @gen.coroutine
   def on_message(self, message):
@@ -154,16 +190,25 @@ class HttpOverWebSocketHandler(_WebSocketHandlerBase):
       contents = json.loads(message)
     except ValueError:
       self.log.debug('Bad JSON: %r', message)
-      self.log.error('Couldn\'t parse JSON', exc_info=True)
+      self.log.error("Couldn't parse JSON", exc_info=True)
       self._write_error(status=400, msg='JSON input is required.')
-      return
+      raise gen.Return()
 
     if not set(contents.keys()).issuperset(self._REQUIRED_KEYS):
       msg = ('Invalid request. The body must contain the following keys: '
              '{required}. Got: {got}').format(
                  required=self._REQUIRED_KEYS, got=contents.keys())
-      self._write_error(status=400, msg=msg)
-      return
+      self._write_error(
+          status=400, msg=msg, message_id=contents.get('message_id'))
+      raise gen.Return()
+
+    message_id = contents['message_id']
+    try:
+      yield self._attach_auth_cookies()
+    except Exception:  # pylint:disable=broad-except
+      self.log.error("Couldn't attach auth cookies")
+      self._on_unhandled_exception(message_id)
+      raise gen.Return()
 
     method = str(contents['method']).upper()
     query = ''
@@ -186,8 +231,7 @@ class HttpOverWebSocketHandler(_WebSocketHandlerBase):
     else:
       body = contents.get('body')
 
-    emitter = _StreamingResponseEmitter(contents['message_id'],
-                                        self.write_message)
+    emitter = _StreamingResponseEmitter(message_id, self.write_message)
     proxy_request = httpclient.HTTPRequest(
         url=path,
         method=method,
@@ -214,13 +258,17 @@ class HttpOverWebSocketHandler(_WebSocketHandlerBase):
         # an error message.
         self.log.exception('Uncaught error when proxying request')
 
-      self._write_error(
-          status=500,
-          msg=('Uncaught server-side exception. Check logs for '
-               'additional details.'))
-      return
+      self._on_unhandled_exception(message_id)
+      raise gen.Return()
 
     emitter.done()
+
+  def _on_unhandled_exception(self, message_id):
+    self._write_error(
+        status=500,
+        msg=('Uncaught server-side exception. Check logs for '
+             'additional details.'),
+        message_id=message_id)
 
 
 class _StreamingResponseEmitter(object):
@@ -303,7 +351,7 @@ class _StreamingResponseEmitter(object):
     }
 
 
-class _ProxiedSocketHandler(_WebSocketHandlerBase):
+class ProxiedSocketHandler(_WebSocketHandlerBase):
   """Socket handler that proxies a websocket connection.
 
   This creates a remote websocket connection and does bidirectional forwarding
@@ -317,23 +365,47 @@ class _ProxiedSocketHandler(_WebSocketHandlerBase):
   """
 
   _PATH_PREFIX = '/http_over_websocket/proxied_ws/'
-  _PATH = _PATH_PREFIX + '.+'
-
-  _PROTOCOL_MAP = {
-      'http': 'ws',
-      'https': 'wss',
-  }
+  PATH = _PATH_PREFIX + '.+'
 
   def __init__(self, *args, **kwargs):
-    super(_ProxiedSocketHandler, self).__init__(*args, **kwargs)
+    super(ProxiedSocketHandler, self).__init__(*args, **kwargs)
     self._proxied_ws_future = None
+
+  def _get_http_client(self):
+    """Test hook to allow a different HTTPClient implementation."""
+    return httpclient.AsyncHTTPClient()
+
+  @gen.coroutine
+  def _attach_auth_cookies(self):
+    auth_url = self.get_argument(_AUTH_URL_QUERY_PARAM, default='')
+    if not auth_url:
+      raise gen.Return({})
+
+    parsed_auth_url = urlparse.urlparse(auth_url)
+
+    try:
+      _validate_same_domain(self.request, parsed_auth_url)
+      extra_cookies = yield _perform_request_and_extract_cookies(
+          parsed_auth_url, self.ca_certs, self._get_http_client())
+    except Exception as e:  # pylint:disable=broad-except
+      self._on_unhandled_exception(e)
+      raise
+
+    self.request.headers.update(extra_cookies)
 
   @gen.coroutine
   def open(self):
+    self._proxied_ws_future = self._on_open()
+    raise gen.Return(self._get_proxied_ws())
+
+  @gen.coroutine
+  def _on_open(self):
     # Only proxy local connections.
     proxy_path = self.request.uri.replace(self._PATH_PREFIX, '/')
-    proxy_url = '{}://{}{}'.format(self._PROTOCOL_MAP[self.request.protocol],
+    proxy_url = '{}://{}{}'.format(_PROTOCOL_MAP[self.request.protocol],
                                    self.request.host, proxy_path)
+    yield self._attach_auth_cookies()
+
     self.log.info('proxying WebSocket connection to: {}'.format(proxy_url))
     proxy_request = httpclient.HTTPRequest(
         url=proxy_url,
@@ -343,9 +415,9 @@ class _ProxiedSocketHandler(_WebSocketHandlerBase):
         ca_certs=self.ca_certs)
     _modify_proxy_request_test_only(proxy_request)
 
-    self._proxied_ws_future = websocket.websocket_connect(
+    client = yield websocket.websocket_connect(
         proxy_request, on_message_callback=self._on_proxied_message)
-    raise gen.Return(self._get_proxied_ws())
+    raise gen.Return(client)
 
   @gen.coroutine
   def _get_proxied_ws(self):
@@ -355,11 +427,7 @@ class _ProxiedSocketHandler(_WebSocketHandlerBase):
     try:
       client = yield self._proxied_ws_future
     except Exception as e:  # pylint:disable=broad-except
-      self.log.exception('Uncaught error when proxying request')
-      code = 500
-      if isinstance(e, httpclient.HTTPError):
-        code = e.code
-      self.close(code, 'Uncaught error when proxying request')
+      self._on_unhandled_exception(e)
     else:
       raise gen.Return(client)
 
@@ -399,6 +467,61 @@ class _ProxiedSocketHandler(_WebSocketHandlerBase):
     self.close(proxied_ws.close_code if proxied_ws else 500,
                proxied_ws.close_reason if proxied_ws else 'Unknown')
 
+  def _on_unhandled_exception(self, e):
+    self.log.exception('Uncaught error when proxying request')
+    code = e.code if isinstance(e, httpclient.HTTPError) else 500
+    self.close(code, 'Uncaught error when proxying request')
+
 
 def _modify_proxy_request_test_only(unused_request):
   """Hook for modifying the request before making a fetch (test-only)."""
+
+
+def _validate_same_domain(request, url):
+  handler_domain = urlparse.urlparse('{}://{}'.format(request.protocol,
+                                                      request.host))
+  if (handler_domain.scheme, handler_domain.netloc) != (url.scheme, url.netloc):
+    raise ValueError('Invalid cross-domain request from {} to {}'.format(
+        handler_domain.geturl(), url.geturl()))
+
+
+@gen.coroutine
+def _perform_request_and_extract_cookies(request_url, ca_certs, http_client):
+  """Fetches URL and returns headers that should be used in subsequent requests.
+
+  This is achieved by requesting the URL and parsing any "Set-Cookie" headers in
+  the response. These values are then assembled into an appropriate "Cookie"
+  header that can be attached to subsequent responses.
+
+  Args:
+    request_url: The URL
+    ca_certs: Filename of any CA certificates to be used for making the proxied
+      request.
+    http_client: A httpclient.AsyncHttpClient to be used when fetching the given
+      URL.
+
+  Yields:
+    A dictionary of headers that should be sent in any subsequent requests.
+  """
+
+  proxy_request = httpclient.HTTPRequest(
+      url=request_url.geturl(),
+      method='GET',
+      headers=None,
+      body=None,
+      ca_certs=ca_certs)
+  _modify_proxy_request_test_only(proxy_request)
+
+  response = yield http_client.fetch(proxy_request, raise_error=False)
+  if response.error:
+    raise response.error
+
+  cookie_fragments = []
+  for cookie_header in response.headers.get_list('Set-Cookie'):
+    parsed_cookie = http_cookies.SimpleCookie(cookie_header)
+    cookie_fragments.append(parsed_cookie.output(attrs=[], header=''))
+
+  headers = {}
+  if cookie_fragments:
+    headers['Cookie'] = '; '.join(cookie_fragments)
+  raise gen.Return(headers)

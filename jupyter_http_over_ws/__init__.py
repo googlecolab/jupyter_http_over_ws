@@ -27,17 +27,20 @@ def _jupyter_server_extension_paths():
   }]
 
 
+def _handler_rule(app, handler_class):
+  return (utils.url_path_join(app.settings['base_url'],
+                              handler_class.PATH), handler_class)
+
+
 def load_jupyter_server_extension(nb_server_app):
   """Called by Jupyter when this module is loaded as a server extension."""
   app = nb_server_app.web_app
   host_pattern = '.*$'
 
   app.add_handlers(host_pattern, [
-      (utils.url_path_join(app.settings['base_url'], '/http_over_websocket'),
-       handlers.HttpOverWebSocketHandler),
-      (utils.url_path_join(app.settings['base_url'],
-                           '/http_over_websocket/diagnose'),
-       handlers.HttpOverWebSocketDiagnosticHandler),
+      _handler_rule(app, handlers.HttpOverWebSocketHandler),
+      _handler_rule(app, handlers.HttpOverWebSocketDiagnosticHandler),
+      _handler_rule(app, handlers.ProxiedSocketHandler),
   ])
   print('jupyter_http_over_ws extension initialized. Listening on '
         '/http_over_websocket')
