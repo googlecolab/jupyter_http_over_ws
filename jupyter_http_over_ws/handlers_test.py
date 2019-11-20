@@ -31,6 +31,7 @@ from tornado import web
 from tornado import websocket
 
 TEST_XSRF_HEADER = 'Propagated-Xsrf'
+FAKE_XSRF_VALUE = 'some-xsrf-token'
 
 
 class FakeSessionsHandler(web.RequestHandler):
@@ -81,6 +82,7 @@ class FakeAuthUrlHandler(web.RequestHandler):
       self.set_status(500)
       return
 
+    self.set_cookie('_xsrf', FAKE_XSRF_VALUE)
     self.set_cookie('X-Test-Cookie', '1')
     self.set_cookie('X-Other-Test-Cookie', '2')
 
@@ -407,7 +409,29 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
   @testing.gen_test
   def test_propagates_body_text_and_xsrf(self):
     request = self.get_ws_connection_request('http_over_websocket')
-    request.headers.add('Cookie', '_xsrf=5678')
+    request.headers.add('Cookie', '_xsrf=' + FAKE_XSRF_VALUE)
+    client = yield websocket.websocket_connect(request)
+    client.write_message(
+        self.get_request_json(
+            '/api/sessions', '1234', method='POST', body='somedata'))
+
+    response_body = yield client.read_message()
+    response = json.loads(response_body)
+    self.assertEqual(200, response['status'])
+    self.assertEqual('somedata',
+                     base64.b64decode(response['data']).decode('utf-8'))
+    self.assertEqual('1234', response['message_id'])
+    self.assertEqual(FAKE_XSRF_VALUE, response['headers'][TEST_XSRF_HEADER])
+    self.assertTrue(response['done'])
+
+  @testing.gen_test
+  def test_auth_url_provided_forwards_cookies_and_propagates_xsrf(self):
+    auth_url = self.get_server_base_url() + '/fake-auth'
+    encoded_query_args = urlparse.urlencode(
+        {'jupyter_http_over_ws_auth_url': auth_url})
+
+    request = self.get_ws_connection_request('http_over_websocket?' +
+                                             encoded_query_args)
     client = yield websocket.websocket_connect(request)
     client.write_message(
         self.get_request_json(
@@ -420,7 +444,7 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
                      base64.b64decode(response['data']).decode('utf-8'))
     self.assertEqual('1234', response['message_id'])
     self.assertIn(TEST_XSRF_HEADER, response['headers'])
-    self.assertEqual('5678', response['headers'][TEST_XSRF_HEADER])
+    self.assertEqual(FAKE_XSRF_VALUE, response['headers'][TEST_XSRF_HEADER])
     self.assertTrue(response['done'])
 
   @testing.gen_test
@@ -698,7 +722,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
     request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.url += '?min_version=0.0.6'
     request.headers.add('Origin', WHITELISTED_ORIGIN)
-    request.headers.add('Cookie', '_xsrf=5678')
+    request.headers.add('Cookie', '_xsrf=' + FAKE_XSRF_VALUE)
 
     client = yield websocket.websocket_connect(request)
     self.assertIsNotNone(client)
@@ -739,7 +763,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
     request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.url += '?min_version=0.0.7'
     request.headers.add('Origin', WHITELISTED_ORIGIN)
-    request.headers.add('Cookie', '_xsrf=5678')
+    request.headers.add('Cookie', '_xsrf=' + FAKE_XSRF_VALUE)
 
     client = yield websocket.websocket_connect(request)
     client.write_message('1')

@@ -184,6 +184,24 @@ class HttpOverWebSocketHandler(_WebSocketHandlerBase):
 
     self.request.headers.update(extra_cookies)
 
+  def _get_xsrf_cookie(self):
+    """Parses the headers and extracts the _xsrf cookie value if it exists."""
+    # Why not use Tornado's existing get_cookie method?
+    # When the "jupyter_http_over_ws_auth_url" query param is set, handlers make
+    # a proxied request and set the XSRF cookie based on the result. The
+    # get_cookie method uses the headers processed as part of the initial
+    # request and is thus insufficient.
+    for cookie_header in self.request.headers.get_list('Cookie'):
+      try:
+        cookie_vals = httputil.parse_cookie(cookie_header)
+        if '_xsrf' in cookie_vals:
+          return cookie_vals['_xsrf']
+      except Exception:  # pylint:disable=broad-except
+        # Malformed cookie header, return empty.
+        pass
+
+    return None
+
   @gen.coroutine
   def on_message(self, message):
     try:
@@ -213,7 +231,7 @@ class HttpOverWebSocketHandler(_WebSocketHandlerBase):
     method = str(contents['method']).upper()
     query = ''
     if method in self._REQUIRE_XSRF_FORWARDING_METHODS:
-      xsrf = self.get_cookie('_xsrf')
+      xsrf = self._get_xsrf_cookie()
       if xsrf:
         query += '_xsrf={}'.format(xsrf)
 
