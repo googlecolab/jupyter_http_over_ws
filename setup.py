@@ -18,10 +18,12 @@ import sys
 from setuptools import find_packages
 from setuptools import setup
 
+
 DEPENDENCIES = (
     'notebook>=5.0',
     'six>=1.6.0',
     'tornado>=4.5',
+    'enum34~=1.1;python_version<"3.4"',
 )
 
 if sys.version_info[0] == 2:
