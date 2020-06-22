@@ -156,7 +156,7 @@ class AlwaysThrowingHTTPOverWebSocketHandler(handlers.HttpOverWebSocketHandler):
     return AlwaysThrowingHTTPClient()
 
 
-WHITELISTED_ORIGIN = 'http://www.examplewhitelistedorigin.com'
+ALLOWED_ORIGIN = 'http://www.exampleallowedorigin.com'
 
 
 class _TestBase(six.with_metaclass(abc.ABCMeta)):
@@ -174,7 +174,7 @@ class _TestBase(six.with_metaclass(abc.ABCMeta)):
         'local_hostnames': ['localhost'],
         # This flag controls which domains cross-origin requests are allowed
         # for.
-        'allow_origin': WHITELISTED_ORIGIN,
+        'allow_origin': ALLOWED_ORIGIN,
     }
     config = self.get_config()
     if config is not None:
@@ -391,7 +391,7 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
     self.assertTrue(response['done'])
 
   @testing.gen_test
-  def test_unwhitelisted_cross_domain_origin(self):
+  def test_disallowed_cross_domain_origin(self):
     request = self.get_ws_connection_request('http_over_websocket')
     request.headers.add('Origin', 'http://www.example.com')
     with self.assertRaises(httpclient.HTTPError) as e:
@@ -400,9 +400,9 @@ class _HttpOverWebSocketHandlerTestBase(_TestBase):
     self.assertEqual(403, e.exception.code)
 
   @testing.gen_test
-  def test_whitelisted_cross_domain_origin(self):
+  def test_allowed_cross_domain_origin(self):
     request = self.get_ws_connection_request('http_over_websocket')
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
     client = yield websocket.websocket_connect(request)
     self.assertIsNotNone(client)
 
@@ -709,7 +709,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
     return []
 
   @testing.gen_test
-  def test_diagnostic_handler_unwhitelisted_cross_domain_origin(self):
+  def test_diagnostic_handler_disallowed_cross_domain_origin(self):
     request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.headers.add('Origin', 'http://www.example.com')
     with self.assertRaises(httpclient.HTTPError) as e:
@@ -721,7 +721,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
   def test_diagnostic_handler_no_problems_request(self):
     request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.url += '?min_version=0.0.7'
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
     request.headers.add('Cookie', '_xsrf=' + FAKE_XSRF_VALUE)
 
     client = yield websocket.websocket_connect(request)
@@ -742,7 +742,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
   @testing.gen_test
   def test_diagnostic_handler_missing_xsrf_cookie(self):
     request = self.get_ws_connection_request('http_over_websocket/diagnose')
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
 
     client = yield websocket.websocket_connect(request)
     client.write_message('1')
@@ -762,7 +762,7 @@ class _HttpOverWebSocketDiagnoseHandlerTestBase(_TestBase):
   def test_diagnostic_handler_newer_protocol_version_requested(self):
     request = self.get_ws_connection_request('http_over_websocket/diagnose')
     request.url += '?min_version=0.0.8'
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
     request.headers.add('Cookie', '_xsrf=' + FAKE_XSRF_VALUE)
 
     client = yield websocket.websocket_connect(request)
@@ -871,7 +871,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
     ]
 
   @testing.gen_test
-  def test_unwhitelisted_cross_domain_origin(self):
+  def test_disallowed_cross_domain_origin(self):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/echoing-ws')
     request.headers.add('Origin', 'http://www.example.com')
@@ -889,7 +889,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/requires-cookies-from-fake-auth-ws?' +
         encoded_query_args)
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
 
     client = yield websocket.websocket_connect(request)
     self.assertIsNotNone(client)
@@ -909,7 +909,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/requires-cookies-from-fake-auth-ws?' +
         encoded_query_args)
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
 
     client = yield websocket.websocket_connect(request)
     self.assertIsNotNone(client)
@@ -926,7 +926,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/requires-cookies-from-fake-auth-ws?' +
         encoded_query_args)
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
 
     with testing.ExpectLog(
         'tornado.application',
@@ -958,7 +958,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
   def test_proxied_connection_io(self):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/echoing-ws?someparam=1')
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
     request.headers.add('X-Echo-Header', 'example')
 
     client = yield websocket.websocket_connect(request)
@@ -983,7 +983,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
   def test_proxied_connection_closed(self):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/close-on-first-message-ws')
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
 
     client = yield websocket.websocket_connect(request)
     self.assertIsNotNone(client)
@@ -1000,7 +1000,7 @@ class _ProxiedSocketHandlerTestBase(_TestBase):
   def test_unknown_path(self):
     request = self.get_ws_connection_request(
         'http_over_websocket/proxied_ws/unknown-path')
-    request.headers.add('Origin', WHITELISTED_ORIGIN)
+    request.headers.add('Origin', ALLOWED_ORIGIN)
 
     client = yield websocket.websocket_connect(request)
     self.assertIsNotNone(client)
