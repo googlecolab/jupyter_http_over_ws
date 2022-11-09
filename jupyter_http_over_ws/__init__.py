@@ -16,7 +16,11 @@
 from jupyter_http_over_ws import handlers
 from notebook import utils
 
-__all__ = ['load_jupyter_server_extension', 'handlers']
+__all__ = [
+    '_load_jupyter_server_extension',
+    'load_jupyter_server_extension',
+    'handlers',
+]
 
 __version__ = str(handlers.HANDLER_VERSION)
 
@@ -32,7 +36,7 @@ def _handler_rule(app, handler_class):
                               handler_class.PATH), handler_class)
 
 
-def load_jupyter_server_extension(nb_server_app):
+def _load_jupyter_server_extension(nb_server_app):
   """Called by Jupyter when this module is loaded as a server extension."""
   app = nb_server_app.web_app
   host_pattern = '.*$'
@@ -44,3 +48,6 @@ def load_jupyter_server_extension(nb_server_app):
   ])
   print('jupyter_http_over_ws extension initialized. Listening on '
         '/http_over_websocket')
+
+
+load_jupyter_server_extension = _load_jupyter_server_extension
