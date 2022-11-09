@@ -13,6 +13,11 @@ Run the following commands in a shell:
 pip install jupyter_http_over_ws
 # Optional: Install the extension to run every time the notebook server starts.
 # Adds a /http_over_websocket endpoint to the Tornado notebook server.
+
+# For jupyter server (JupyterLab)
+jupyter server extension enable --py jupyter_http_over_ws
+
+# For jupyter notebook
 jupyter serverextension enable --py jupyter_http_over_ws
 ```
 
@@ -23,6 +28,12 @@ explicitly trust WebSocket connections from the host communicating via
 HTTP-over-WebSocket.
 
 ```shell
+# jupyter server
+jupyter server \
+  --ServerApp.allow_origin='https://www.example.com' \
+  --port=8081
+
+# jupyter notebook
 jupyter notebook \
   --NotebookApp.allow_origin='https://www.example.com' \
   --port=8081
@@ -43,6 +54,13 @@ server using the `--no-browser` flag and open the provided link that appears in
 the terminal from the same browser that you would like to connect from:
 
 ```shell
+# jupyter server
+jupyter server \
+  --ServerApp.allow_origin='https://www.example.com' \
+  --port=8081
+  --no-browser
+
+# jupyter notebook
 jupyter notebook \
   --NotebookApp.allow_origin='https://www.example.com' \
   --port=8081
@@ -58,7 +76,12 @@ The jupyter server extension can be disabled and removed by running the
 following commands in a shell:
 
 ```shell
+# jupyter server
+jupyter server extension disable --py jupyter_http_over_ws
+
+# jupyter notebook
 jupyter serverextension disable --py jupyter_http_over_ws
+
 pip uninstall jupyter_http_over_ws
 ```
 
